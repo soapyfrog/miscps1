@@ -28,6 +28,9 @@ param(
 #------------------------------------------------------------------------------
 # here we go
 
+# the next line is require because FromFile below throws a /zero (?!)
+$path=(resolve-path -erroraction "stop" $path).path
+
 $palettes = @{
   "ascii" = " .,:;=|iI+hHOE#`$"
   "shade" = " " + [char]0x2591 + [char]0x2592 + [char]0x2593 + [char]0x2588
