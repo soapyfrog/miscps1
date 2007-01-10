@@ -16,7 +16,7 @@
 # Simple function to get the contents of the console buffer as a series of
 # lines of text
 #
-function get-buffer {
+function get-bufferhtml {
   param(
     [int]$last = 50000,             # how many lines to get, back from current position
     [switch]$all,                   # if true, get all lines in buffer
@@ -46,26 +46,34 @@ function get-buffer {
   $defaultfg = $fg; $defaultbg = $bg
   
   # character translations
-  $cmap = @{[char]"<"="&lt;";[char]"&"="&amp;"}
+  $cmap = @{
+      [char]"<" = "&lt;"
+      [char]">" = "&gt;"
+      [char]"'" = "&apos;" # my IE7 doesn't like this for some reason
+      [char]"`"" = "&quot;"
+      [char]"&" = "&amp;"
+  }
 
   # console colour mapping
+  # the windows console has some odd colour choices, 
+  # marked with a 6-char hex codes below
   $comap = @{
-      "Black"="#000"
-      "DarkBlue"="#008"
-      "DarkGreen"="#080"
-      "DarkCyan"="#088"
-      "DarkRed"="#800"
-      "DarkMagenta"="#228" #no, i don't know why either
-      "DarkYellow"="#880"
-      "Gray"="#888"
-      "DarkGray" ="#444"
-      "Blue"="#00f"
-      "Green" ="#0f0"
-      "Cyan"="#0ff"
-      "Red"="#f00"
-      "Magenta" ="#f0f"
-      "Yellow" ="#ff0"
-      "White"="#fff"
+      "Black"       ="#000"
+      "DarkBlue"    ="#008"
+      "DarkGreen"   ="#080"
+      "DarkCyan"    ="#088"
+      "DarkRed"     ="#800"
+      "DarkMagenta" ="#012456"
+      "DarkYellow"  ="#eeedf0"
+      "Gray"        ="#ccc"
+      "DarkGray"    ="#888"
+      "Blue"        ="#00f"
+      "Green"       ="#0f0"
+      "Cyan"        ="#0ff"
+      "Red"         ="#f00"
+      "Magenta"     ="#f0f"
+      "Yellow"      ="#ff0"
+      "White"       ="#fff"
   }
   # inner function to translate a console colour to an html/css one
   function c2h{return $comap[[string]$args[0]]}
@@ -109,9 +117,18 @@ function pattern {
     $host.ui.rawui.foregroundcolor = $rnd.next(16)
     write-host -noNewLine " $($rnd.next(10000)) "
   }
+  $host.ui.rawui.backgroundcolor = $b
+  write-host "`n"
+  foreach ($i in 0..15) {
+    $host.ui.rawui.backgroundcolor = $i
+    $host.ui.rawui.foregroundcolor = $( if ($i) {0} else {7} )
+    $cn = $host.ui.rawui.backgroundcolor.ToString()
+    write-host -noNewLine ("  $cn  ".padright(20))
+  }
   $host.ui.rawui.foregroundcolor = $f
   $host.ui.rawui.backgroundcolor = $b
-  write-host ""
+  write-host
+
 }
 
 
