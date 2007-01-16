@@ -18,7 +18,9 @@
 #
 param(
   [string]$path = $(throw "Supply an image path"),
-  [int]$maxwidth,            # default is width of console
+  [int]$maxwidth,            # default is width of console (or width of image,
+                             # whichever is smaller. You'd want to set ratio to 1
+                             # probably too
   [string]$palette="ascii",  # choose a palette, "ascii" or "shade"
   [float]$ratio = 1.5        # 1.5 means char height is 1.5 x width
   )
@@ -51,6 +53,8 @@ $dllpath=(get-command "system.drawing.dll").definition
 $image = [Drawing.Image]::FromFile($path)
 if ($maxwidth -le 0) { [int]$maxwidth = $host.ui.rawui.WindowSize.Width - 1}
 [int]$imgwidth = $image.Width
+# if the image is really small, set maxwidth to real width (eg if converting tiny gifs)
+if ($imgwidth -le $maxwidth) { $maxwidth=$imgwidth }
 [int]$maxheight = $image.Height / ($imgwidth / $maxwidth) / $ratio
 $bitmap = new-object Drawing.Bitmap ($image,$maxwidth,$maxheight)
 [int]$bwidth = $bitmap.Width; [int]$bheight = $bitmap.Height
