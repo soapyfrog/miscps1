@@ -108,7 +108,7 @@ function get-bufferhtml {
 }
  
 
-function pattern {
+function colour-pattern {
   $f = $host.ui.rawui.foregroundcolor
   $b = $host.ui.rawui.backgroundcolor
   $rnd = new-object Random ((get-date).millisecond)
