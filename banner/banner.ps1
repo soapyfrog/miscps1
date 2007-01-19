@@ -19,7 +19,7 @@
 param([string[]]$inputtext="I'm a banner!",[char]$fg=0x2588,[char]$bg=" ")
 
 function create-cache {
-  write-debug "creating cache"
+# do not change the formatting of this script as trailing spaces are important
 $digits=@"
  www    w    www   www  w  w  wwww   www  wwwww  www   www   
 w  ww  ww       w w   w w  w  w     w         w w   w w   w  
@@ -137,7 +137,7 @@ $space=@"
   $script:charmap += parsePatterns $queryat "?@"
   $script:charmap += parsePatterns $lsquiggle2tilde "{|}~"
   $script:charmap += parsePatterns $lsquare2rsquare "[\]"
-  $script:charmap += parsePatterns $caret2backtick "^_"+[char]0x60 # because it screws my ide if i have a ` as last char
+  $script:charmap += parsePatterns $caret2backtick "^_``"
   $script:charmap += parsePatterns $currency ([string]([char]0xa3 + [char]0xa2 +[char]0x20ac +[char]0xa5))
   $script:charmap += parsePatterns $space " "
 } # end of create-cache
