@@ -16,7 +16,10 @@
 # This script takes a string and outputs it in banner form.
 #
 
-param([string[]]$inputtext="I'm a banner!",[char]$fg=0x2588,[char]$bg=" ")
+param([string[]]$inputtext,[char]$fg=0x2588,[char]$bg=" ")
+
+# if input text supplied, use it instead of default pipeline
+if ($inputtext) { $input = $inputtext }
 
 function create-cache {
 # do not change the formatting of this script as trailing spaces are important
@@ -166,13 +169,9 @@ function process-line([string]$text) {
   }
 }
 
-function main {
-    foreach ($c in $inputtext) {
-      process-line $c
-      ""
-    }
-}
-
 # Here we go!
 if (! (test-path variable:charmap)) { create-cache }
-& main 
+foreach ($c in $input) {
+  process-line $c
+  ""
+}
