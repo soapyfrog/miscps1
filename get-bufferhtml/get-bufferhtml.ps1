@@ -62,8 +62,12 @@ else {
   [int]$start = $end - $last
   if ($start -le 0) { $start = 0 }
 }
-$width = $ui.BufferSize.Width
 $height = $end - $start
+if ($height -le 0) {
+  write-warning "There must be one or more lines to get"
+  return
+}
+$width = $ui.BufferSize.Width
 $dims = 0,$start,($width-1),($end-1)
 $rect = new-object Management.Automation.Host.Rectangle -argumentList $dims
 $cells = $ui.GetBufferContents($rect)
