@@ -10,7 +10,7 @@
 # Creative Commons, 559 Nathan Abbott Way, Stanford, California 94305, USA.
 #------------------------------------------------------------------------------
 
-# $id$
+# $Id$
 
 #------------------------------------------------------------------------------
 # This script grabs text from the console buffer and outputs to the pipeline
@@ -82,8 +82,8 @@ $cmap = @{
     [char]"<" = "<span>&lt;</span>"
     [char]"\" = "&#x5c;"
     [char]">" = "&gt;"
-#      [char]"'" = "&apos;" # IE7 doesn't like this for some reason
-    [char]"`"" = "&quot;"
+    [char]"'" = "&#39;"
+    [char]"`"" = "&#34;"
     [char]"&" = "&amp;"
 }
 
