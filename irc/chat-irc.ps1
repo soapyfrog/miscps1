@@ -11,27 +11,21 @@
 #------------------------------------------------------------------------------
 
 # $Id$
-#
-# This is a dot-sourceable module for handling IRC communication.
 
 #------------------------------------------------------------------------------
-# demo stuff
-#
+# This script handles chatting and listing to IRC servers.
+
 param(
 [string]$message="Test message",          # message to send
-[Collections.IEnumerable]$coninfo=@{      # irc connection info
-    server="chat.freenode.net"
-    port = 6667
-    user = "goronb"
-    pwd = ""
-    nick="goronb"
-    realname = "Adrian Milliner (out-irc)"
-    hostname = "soapyfrog.com"
-  },
+[Collections.IEnumerable]$coninfo=$(throw "missing coninfo"),
 [string]$channel="#test",                 # channel to join
-[switch]$incprivate = $false,             # include private msgs in output
-[switch]$incchannel = $true,              # include channel msgs in output
-[switch]$incmotd = $false,                # include motd msgs in output
+                                          # include in the output:
+[switch]$incprivate = $false,             # msgs to me
+[switch]$incchannel = $true,              # msgs to my channel(s)
+[switch]$incnotice = $false,              # notices as well as privmsgs
+[switch]$incother = $false,               # msgs to other (eg auth msgs)
+[switch]$incmotd = $false,                # motd
+
 [switch]$debug,                           # output debug info
 [switch]$verbose                          # output all client/server messages
 )
@@ -48,17 +42,14 @@ if (! $coninfo.server) { throw "missing server from coninfo" }
 if (! $coninfo.port) { $coninfo.port = 6667 }
 if (! $coninfo.user) { throw "missing user from coninfo" }
 if (! $coninfo.nick) { $coninfo.nick = $coninfo.user}
-if (! $coninfo.realname) { $coninfo.user = "inout-irc as $($coninfo.nick)" }
+if (! $coninfo.realname) { $coninfo.realname = "inout-irc as $($coninfo.nick)" }
 if (! $coninfo.hostname) { $coninfo.hostname = "localhost" }
 
-write-debug "Using coninfo: $( out-string $coninfo)"
-return;
-
-
+write-debug "Using connection info:" # compact format
+$coninfo.GetEnumerator() | foreach { write-debug "$($_.name): $($_.value)" }
 
 [int]$altnick=1
 [string]$realnick=$coninfo.nick
-
 
 # if a message is supplied, use for writing, else send whatever's
 # in the pipeline
@@ -81,10 +72,19 @@ function _notice($who,$msg) {
   _send $writer "NOTICE $who :$msg"
 }
 
+function _onprivmsg {
+  $to = $params[0]
+  $ok = $incother -or ($incprivate -and $to -eq $realnick) -or ($incchannel -and $joined.Contains($to)) 
+  if ($ok) {
+    $from = "$pfxnick/$pfxuser@$pfxhost"
+    $msg = $params[1]
+    "$from : $to : $msg"
+  }
+}
+
 
 $script:client = new-object Net.Sockets.TcpClient
-write-warning ($coninfo.server)
-$client.Connect(($coninfo.server), ($coninfo.port))
+$client.Connect($coninfo.server, $coninfo.port)
 [Net.Sockets.NetworkStream]$script:ns = $client.GetStream()
 $ns.ReadTimeout = 120000 # debug - we want errors if we get nothing for 2 mins
 [IO.StreamWriter]$script:writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
@@ -94,8 +94,10 @@ _send $writer "NICK $realnick"
 _send $writer "USER $($coninfo.user) $($coninfo.hostname) $($coninfo.server) :$($coninfo.realname)" 
 
 
+
+# here follows the main event loop.
 $active = $true
-$joined = @{}
+$joined = @{} # channels that have been joined 
 while ($active) {
   [string]$line = $reader.ReadLine()
   if (!$line) { break }
@@ -141,9 +143,6 @@ while ($active) {
     $pfxuser = $matches[3]
     $pfxhost = $matches[5]
   }
-  
-  write-debug "prefix=$prefix command=$command params=$params"
-
   # route messages accordingly
   switch ($command) {
     "PING" { # send a ping
@@ -173,18 +172,18 @@ while ($active) {
     "433" { # ERR_NICKNAMEINUSE try another
       $t = $realnick
       $altnick++
-      $realnick = "$nick$altnick"
+      $realnick = "$($coninfo.nick)$altnick"
       write-debug "NICK $t was in use, trying $realnick"
       _send $writer "NICK $realnick"
       break
     }
-    "PRIVMSG" { # a private message, either to channel or me
-      "$pfxnick/$pfxuser@$pfxhost : $($params[1])"
-      if ($params[1] -match "wibble") { $active = $false }
-      break
-    }
     "NOTICE" { # a notice that should not be replied to
-      "$pfxnick/$pfxuser@$pfxhost : $($params[1])"
+      if (! $incnotice ) { break }
+      # else treat as a privmsg
+      _onprivmsg $params
+    }
+    "PRIVMSG" { # a private message, either to channel or me
+      _onprivmsg $params
       break
     }
     default {
