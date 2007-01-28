@@ -18,15 +18,17 @@
 # demo stuff
 #
 param(
-[string]$message="Test message",
-[string]$server="chat.freenode.net",
-[int]$port = 6667,
-[string]$user = "goronA",
-[string]$pwd = "",
-[string]$nick="goronb",
-[string]$realname = "Adrian Milliner",
-[string]$hostname = "soapyfrog.com",
-[string]$channel="#test",
+[string]$message="Test message",          # message to send
+[Collections.IEnumerable]$coninfo=@{      # irc connection info
+    server="chat.freenode.net"
+    port = 6667
+    user = "goronb"
+    pwd = ""
+    nick="goronb"
+    realname = "Adrian Milliner (out-irc)"
+    hostname = "soapyfrog.com"
+  },
+[string]$channel="#test",                 # channel to join
 [switch]$incprivate = $false,             # include private msgs in output
 [switch]$incchannel = $true,              # include channel msgs in output
 [switch]$incmotd = $false,                # include motd msgs in output
@@ -40,7 +42,21 @@ if ($verbose) { $VerbosePreference="Continue" }
 
 $ErrorActionPreference="Stop"
 
+# verify/default arguments
+$coninfo = $coninfo.Clone()
+if (! $coninfo.server) { throw "missing server from coninfo" }
+if (! $coninfo.port) { $coninfo.port = 6667 }
+if (! $coninfo.nick) { throw "missing nick from coninfo" }
+if (! $coninfo.user) { $coninfo.user = $coninfo.nick }
+if (! $coninfo.realname) { $coninfo.user = $coninfo.nick }
+
+echo $myinvocation.scriptname
+return;
+
+
+
 [int]$altnick=1
+[string]$realnick=$coninfo.nick
 
 
 # if a message is supplied, use for writing, else send whatever's
@@ -56,15 +72,25 @@ function _send([IO.StreamWriter]$sw,[string]$s) {
   $writer.Flush()
 }
 
-$client = new-object Net.Sockets.TcpClient
-$client.Connect($server, $port)
-[Net.Sockets.NetworkStream]$ns = $client.GetStream()
+function _privmsg($who,$msg) {
+  _send $writer "PRIVMSG $who :$msg"
+}
+
+function _notice($who,$msg) {
+  _send $writer "NOTICE $who :$msg"
+}
+
+
+$script:client = new-object Net.Sockets.TcpClient
+write-warning ($coninfo.server)
+$client.Connect(($coninfo.server), ($coninfo.port))
+[Net.Sockets.NetworkStream]$script:ns = $client.GetStream()
 $ns.ReadTimeout = 120000 # debug - we want errors if we get nothing for 2 mins
-[IO.StreamWriter]$writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
-[IO.StreamReader]$reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
-if ($pwd -ne "") { _send $writer "PASS $pwd" }
-_send $writer "NICK $nick" 
-_send $writer "USER $user $hostname $server :$realname" 
+[IO.StreamWriter]$script:writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
+[IO.StreamReader]$script:reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
+if ($coninfo.pwd -ne "") { _send $writer "PASS $($coninfo.pwd)" }
+_send $writer "NICK $realnick" 
+_send $writer "USER $($coninfo.user) $($coninfo.hostname) $($coninfo.server) :$($coninfo.realname)" 
 
 
 $active = $true
@@ -134,22 +160,30 @@ while ($active) {
       break
     }
     "332" { # RPL_TOPIC - we have joined a channel
-      write-debug "We have joined channel $($params[0])"
-      $joined[$params[0]] = $true
-      _send $writer "PRIVMSG $channel :$message"
-      #_send $writer "PART $channel"
-      #$active = $false
+      if ($params[0] -eq $realnick) {
+        $chan = $params[1]
+        write-debug "We have joined channel $chan"
+        $joined[$chan] = $true
+        # send the message TODO: fix this rubbish
+        _notice $channel $message
+      }
       break
     }
     "433" { # ERR_NICKNAMEINUSE try another
+      $t = $realnick
       $altnick++
-      _send $writer "NICK ${nick}$altnick"
+      $realnick = "$nick$altnick"
+      write-debug "NICK $t was in use, trying $realnick"
+      _send $writer "NICK $realnick"
       break
     }
-    "PRIVMSG" { # a private message, presumable to me
+    "PRIVMSG" { # a private message, either to channel or me
       "$pfxnick/$pfxuser@$pfxhost : $($params[1])"
-      write-debug "Got a priv msg!  $params"
       if ($params[1] -match "wibble") { $active = $false }
+      break
+    }
+    "NOTICE" { # a notice that should not be replied to
+      "$pfxnick/$pfxuser@$pfxhost : $($params[1])"
       break
     }
     default {
