@@ -16,8 +16,9 @@
 # This script handles chatting and listing to IRC servers.
 
 param(
-[string[]]$join=@("#test"),               # channel(s) to join
-[string]$message="Test message",          # message to send
+[string[]]$join=@(),                      # channel(s) to join
+[string]$sendto=$null,                    # channel to send message to
+[string[]]$message=$null,                 # default is input pipeline
 [Collections.IEnumerable]$coninfo=$(throw "missing coninfo"),
                                         # include in the output:
 [switch]$incprivate = $false,             # msgs to me
@@ -30,31 +31,51 @@ param(
 [switch]$verbose                          # output all client/server messages
 )
 
-# deal with param switches
+# deal with param switches and error handling
 if ($debug) { $DebugPreference="Continue" }
 if ($verbose) { $VerbosePreference="Continue" }
-
 $ErrorActionPreference="Stop"
 
-# verify/default arguments
-$coninfo = $coninfo.Clone()
-if (! $coninfo.server) { throw "missing server from coninfo" }
-if (! $coninfo.port) { $coninfo.port = 6667 }
-if (! $coninfo.user) { throw "missing user from coninfo" }
-if (! $coninfo.nick) { $coninfo.nick = $coninfo.user}
-if (! $coninfo.realname) { $coninfo.realname = "inout-irc as $($coninfo.nick)" }
-if (! $coninfo.hostname) { $coninfo.hostname = "localhost" }
-
-write-debug "Using connection info:" # compact format
-$coninfo.GetEnumerator() | foreach { write-debug "$($_.name): $($_.value)" }
-
-[int]$altnick=1
-[string]$realnick=$coninfo.nick
-
-# if a message is supplied, use for writing, else send whatever's
-# in the pipeline
+# use $message for input if supplied
 if ($message) {
   $input = $message
+}
+
+# See end of file for main entry point
+
+
+function createSession($coninfo) {
+  # verify/default arguments
+  $coninfo = $coninfo.Clone()
+  if (! $coninfo.server) { throw "missing server from coninfo" }
+  if (! $coninfo.port) { $coninfo.port = 6667 }
+  if (! $coninfo.user) { throw "missing user from coninfo" }
+  if (! $coninfo.nick) { $coninfo.nick = $coninfo.user}
+  if (! $coninfo.realname) { $coninfo.realname = "inout-irc as $($coninfo.nick)" }
+  if (! $coninfo.hostname) { $coninfo.hostname = "localhost" }
+
+  write-debug "Using connection info:" # compact format
+  $coninfo.GetEnumerator() | foreach { write-debug "$($_.name): $($_.value)" }
+
+  $session = @{}
+
+  $session.altnick=[int]1
+  $session.realnick=$coninfo.nick
+
+  return $session
+}
+
+
+# check that we have a channel to send to
+if ($sendto) {
+  if ($join -eq $sendto) { 
+    # weird syntax for contains, no inverse, so do nothing
+  }
+  else { $join += $sendto }
+}
+
+if ($join.length -eq 0) {
+  throw "you must supply channels to join (-join) or a channel to send to (-sendto)"
 }
 
 # send and flush a message, write it to debug too
@@ -76,33 +97,16 @@ function _onprivmsg {
   $to = $params[0]
   $ok = $incother -or ($incprivate -and $to -eq $realnick) -or ($incchannel -and $joined.Contains($to)) 
   if ($ok) {
-    $from = "$pfxnick/$pfxuser@$pfxhost"
+    $from = "$pfxnick ! $pfxuser@$pfxhost"
     $msg = $params[1]
     "$from : $to : $msg"
   }
 }
 
-
-$script:client = new-object Net.Sockets.TcpClient
-$client.Connect($coninfo.server, $coninfo.port)
-[Net.Sockets.NetworkStream]$script:ns = $client.GetStream()
-$ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
-[IO.StreamWriter]$script:writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
-[IO.StreamReader]$script:reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
-if ($coninfo.pwd -ne "") { _send $writer "PASS $($coninfo.pwd)" }
-_send $writer "NICK $realnick" 
-_send $writer "USER $($coninfo.user) $($coninfo.hostname) $($coninfo.server) :$($coninfo.realname)" 
-
-
-
-# here follows the main event loop.
-$active = $true
-$joined = @{} # channels that have been joined 
-while ($active) {
-  [string]$line = $reader.ReadLine()
-  if (!$line) { break }
-  write-verbose "<< $line"
-
+#------------------------------------------------------------------------------
+# parse a line from the server and returns the prefix nick,user,host,command
+# and param array.
+function parseline {
   # parse lines from server
   [string]$prefix = ""
   [string]$command = ""
@@ -143,6 +147,34 @@ while ($active) {
     $pfxuser = $matches[3]
     $pfxhost = $matches[5]
   }
+
+  return $pfxnick,$pfxuser,$pfxhost,$command,$params
+}
+
+
+$script:client = new-object Net.Sockets.TcpClient
+$client.Connect($coninfo.server, $coninfo.port)
+[Net.Sockets.NetworkStream]$script:ns = $client.GetStream()
+$ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
+[IO.StreamWriter]$script:writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
+[IO.StreamReader]$script:reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
+if ($coninfo.pwd -ne "") { _send $writer "PASS $($coninfo.pwd)" }
+_send $writer "NICK $realnick" 
+_send $writer "USER $($coninfo.user) $($coninfo.hostname) $($coninfo.server) :$($coninfo.realname)" 
+
+
+
+# here follows the main event loop.
+$active = $true
+$joined = @{} # channels that have been joined 
+
+while ($active) {
+  [string]$line = $reader.ReadLine()
+  if (!$line) { break }
+  write-verbose "<< $line"
+
+  $pfxnick,$pfxuser,$pfxhost,$command,$params = parseline $line
+
   # route messages accordingly
   switch ($command) {
     "PING" { 
@@ -165,8 +197,10 @@ while ($active) {
         $chan = $params[0]
         write-debug "We may have joined channel $chan"
         $joined[$chan] = $true
-        # send the message TODO: fix this rubbish
-        _privmsg $chan $message
+        if ($chan -eq $sendto) {
+          # send the message TODO: fix this rubbish
+          _privmsg $chan $message
+        }
       }
     }
     "332" { # RPL_TOPIC - we have joined a channel
@@ -174,8 +208,7 @@ while ($active) {
         $chan = $params[1]
         write-debug "We have joined channel $chan"
         $joined[$chan] = $true
-        # send the message TODO: fix this rubbish
-        _privmsg $chan $message
+        # TODO tie this up with JOIN above
       }
       break
     }
@@ -213,3 +246,12 @@ $joined.GetEnumerator() | where {$_.value} | foreach {
 _send $writer "QUIT :bye bye"
 
 $client.Close();
+
+
+
+
+#--
+# program starts here
+#
+$session = createSession($coninfo)
+
