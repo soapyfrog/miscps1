@@ -27,9 +27,11 @@ param(
 [string]$realname = "Adrian Milliner",
 [string]$hostname = "soapyfrog.com",
 [string]$channel="#test",
-[switch]$incprivate = $true,
-[switch]$debug,
-[switch]$verbose
+[switch]$incprivate = $false,             # include private msgs in output
+[switch]$incchannel = $true,              # include channel msgs in output
+[switch]$incmotd = $false,                # include motd msgs in output
+[switch]$debug,                           # output debug info
+[switch]$verbose                          # output all client/server messages
 )
 
 # deal with param switches
@@ -57,7 +59,7 @@ function _send([IO.StreamWriter]$sw,[string]$s) {
 $client = new-object Net.Sockets.TcpClient
 $client.Connect($server, $port)
 [Net.Sockets.NetworkStream]$ns = $client.GetStream()
-$ns.ReadTimeout = 1110000 # debug - we want errors if we get nothing for 10 seconds
+$ns.ReadTimeout = 120000 # debug - we want errors if we get nothing for 2 mins
 [IO.StreamWriter]$writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
 [IO.StreamReader]$reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
 if ($pwd -ne "") { _send $writer "PASS $pwd" }
@@ -66,6 +68,7 @@ _send $writer "USER $user $hostname $server :$realname"
 
 
 $active = $true
+$joined = @{}
 while ($active) {
   [string]$line = $reader.ReadLine()
   if (!$line) { break }
@@ -121,13 +124,18 @@ while ($active) {
       break
     }
     "372" { # MOTD text
+      if ($incmotd) {
+        $params[1]
+      }
       break
     }
     "376" { # end of motd message - connected and free to do stuff
       _send $writer "JOIN $channel"
       break
     }
-    "332" { # topic message - sent when joining a channel
+    "332" { # RPL_TOPIC - we have joined a channel
+      write-debug "We have joined channel $($params[0])"
+      $joined[$params[0]] = $true
       _send $writer "PRIVMSG $channel :$message"
       #_send $writer "PART $channel"
       #$active = $false
@@ -149,6 +157,12 @@ while ($active) {
     }
   }
 }
+
+# leave any joined channels
+$joined.GetEnumerator() | where {$_.value} | foreach {
+  _send $writer "PART $($_.name)"
+}
+# quit
 _send $writer "QUIT :bye bye"
 
 $client.Close();
