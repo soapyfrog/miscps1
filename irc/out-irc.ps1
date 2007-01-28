@@ -22,15 +22,24 @@ param(
 [string]$server="chat.freenode.net",
 [int]$port = 6667,
 [string]$user = "goronA",
+[string]$pwd = "",
 [string]$nick="goronb",
 [string]$realname = "Adrian Milliner",
-[string]$channel="#test"
+[string]$hostname = "soapyfrog.com",
+[string]$channel="#test",
+[switch]$incprivate = $true,
+[switch]$debug,
+[switch]$verbose
 )
+
+# deal with param switches
+if ($debug) { $DebugPreference="Continue" }
+if ($verbose) { $VerbosePreference="Continue" }
+
+$ErrorActionPreference="Stop"
 
 [int]$altnick=1
 
-$DebugPreference="Continue" # shows raw irc responses
-$ErrorActionPreference="Stop"
 
 # if a message is supplied, use for writing, else send whatever's
 # in the pipeline
@@ -51,8 +60,9 @@ $client.Connect($server, $port)
 $ns.ReadTimeout = 1110000 # debug - we want errors if we get nothing for 10 seconds
 [IO.StreamWriter]$writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
 [IO.StreamReader]$reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
+if ($pwd -ne "") { _send $writer "PASS $pwd" }
 _send $writer "NICK $nick" 
-_send $writer "USER $user foo.com $server :$realname" 
+_send $writer "USER $user $hostname $server :$realname" 
 
 
 $active = $true
@@ -62,11 +72,11 @@ while ($active) {
   write-verbose "<< $line"
 
   # parse lines from server
-  $prefix = ""
-  $command = ""
-  $paramstring = ""
+  [string]$prefix = ""
+  [string]$command = ""
+  [string]$paramstring = ""
   # check for cmd with prefix
-  if ($line -match "^(:.+?) +([A-Z]+|[0-9]{3}) +(.*)") {
+  if ($line -match "^:(.+?) +([A-Z]+|[0-9]{3}) +(.*)") {
     $prefix = $matches[1]
     $command = $matches[2]
     $paramstring = $matches[3]
@@ -81,16 +91,27 @@ while ($active) {
     continue
   }
   # parse the paramstring
-  $trailing = ""
-  $i = $paramstring.indexOf(":")
+  [string]$trailing = ""
+  [int]$i = $paramstring.indexOf(":")
   if ($i -ge 0) {
     $trailing = $paramstring.substring($i+1)
     if ($i -gt 0) { $paramstring = $paramstring.substring(0,$i-1) }
     else {$paramstring=""}
   }
-  $params = $paramstring.split(" ")|where {$_ -ne ""}
-  $params += $trailing
+  [string[]]$params = $paramstring.split(" ")|where {$_ -ne ""}
+  if ($trailing -ne "") { $params += $trailing }
   # all params are equal, the trailing bit is just a workaround for whitespace
+
+  # parse the prefix
+  [string]$pfxnick=""
+  [string]$pfxuser=""
+  [string]$pfxhost=""
+  if ($prefix -ne "" -and $prefix -match "([^!@]+)(!([^@]+)){0,1}(@(.*)){0,1}") {
+    $pfxnick = $matches[1]
+    $pfxuser = $matches[3]
+    $pfxhost = $matches[5]
+  }
+  
   write-debug "prefix=$prefix command=$command params=$params"
 
   # route messages accordingly
@@ -108,17 +129,19 @@ while ($active) {
     }
     "332" { # topic message - sent when joining a channel
       _send $writer "PRIVMSG $channel :$message"
-      _send $writer "PART $channel"
-      $active = $false
+      #_send $writer "PART $channel"
+      #$active = $false
       break
     }
-    "433" { # nick collision, try another
+    "433" { # ERR_NICKNAMEINUSE try another
       $altnick++
       _send $writer "NICK ${nick}$altnick"
       break
     }
     "PRIVMSG" { # a private message, presumable to me
+      "$pfxnick/$pfxuser@$pfxhost : $($params[1])"
       write-debug "Got a priv msg!  $params"
+      if ($params[1] -match "wibble") { $active = $false }
       break
     }
     default {
@@ -126,5 +149,6 @@ while ($active) {
     }
   }
 }
+_send $writer "QUIT :bye bye"
 
 $client.Close();
