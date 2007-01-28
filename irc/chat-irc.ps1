@@ -46,11 +46,12 @@ $ErrorActionPreference="Stop"
 $coninfo = $coninfo.Clone()
 if (! $coninfo.server) { throw "missing server from coninfo" }
 if (! $coninfo.port) { $coninfo.port = 6667 }
-if (! $coninfo.nick) { throw "missing nick from coninfo" }
-if (! $coninfo.user) { $coninfo.user = $coninfo.nick }
-if (! $coninfo.realname) { $coninfo.user = $coninfo.nick }
+if (! $coninfo.user) { throw "missing user from coninfo" }
+if (! $coninfo.nick) { $coninfo.nick = $coninfo.user}
+if (! $coninfo.realname) { $coninfo.user = "inout-irc as $($coninfo.nick)" }
+if (! $coninfo.hostname) { $coninfo.hostname = "localhost" }
 
-echo $myinvocation.scriptname
+write-debug "Using coninfo: $( out-string $coninfo)"
 return;
 
 
