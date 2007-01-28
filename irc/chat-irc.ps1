@@ -16,10 +16,10 @@
 # This script handles chatting and listing to IRC servers.
 
 param(
+[string[]]$join=@("#test"),               # channel(s) to join
 [string]$message="Test message",          # message to send
 [Collections.IEnumerable]$coninfo=$(throw "missing coninfo"),
-[string]$channel="#test",                 # channel to join
-                                          # include in the output:
+                                        # include in the output:
 [switch]$incprivate = $false,             # msgs to me
 [switch]$incchannel = $true,              # msgs to my channel(s)
 [switch]$incnotice = $false,              # notices as well as privmsgs
@@ -86,7 +86,7 @@ function _onprivmsg {
 $script:client = new-object Net.Sockets.TcpClient
 $client.Connect($coninfo.server, $coninfo.port)
 [Net.Sockets.NetworkStream]$script:ns = $client.GetStream()
-$ns.ReadTimeout = 120000 # debug - we want errors if we get nothing for 2 mins
+$ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
 [IO.StreamWriter]$script:writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
 [IO.StreamReader]$script:reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
 if ($coninfo.pwd -ne "") { _send $writer "PASS $($coninfo.pwd)" }
@@ -145,8 +145,8 @@ while ($active) {
   }
   # route messages accordingly
   switch ($command) {
-    "PING" { # send a ping
-      $active=$false
+    "PING" { 
+      _send $writer "PONG $($params[0])"
       break
     }
     "372" { # MOTD text
@@ -156,8 +156,18 @@ while ($active) {
       break
     }
     "376" { # end of motd message - connected and free to do stuff
-      _send $writer "JOIN $channel"
+      $channels = [string]::join(",",$join)
+      _send $writer "JOIN $channels"
       break
+    }
+    "JOIN" { # got a JOIN msg - it might have been me
+      if ($pfxnick -eq $realnick) {
+        $chan = $params[0]
+        write-debug "We may have joined channel $chan"
+        $joined[$chan] = $true
+        # send the message TODO: fix this rubbish
+        _privmsg $chan $message
+      }
     }
     "332" { # RPL_TOPIC - we have joined a channel
       if ($params[0] -eq $realnick) {
@@ -165,7 +175,7 @@ while ($active) {
         write-debug "We have joined channel $chan"
         $joined[$chan] = $true
         # send the message TODO: fix this rubbish
-        _notice $channel $message
+        _privmsg $chan $message
       }
       break
     }
@@ -184,6 +194,9 @@ while ($active) {
     }
     "PRIVMSG" { # a private message, either to channel or me
       _onprivmsg $params
+      if ($params[1] -match "wibble") {
+        $active=$false # code word to quit
+      }
       break
     }
     default {
