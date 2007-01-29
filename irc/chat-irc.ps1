@@ -35,17 +35,16 @@ param(
 if ($debug) { $DebugPreference="Continue" }
 if ($verbose) { $VerbosePreference="Continue" }
 $ErrorActionPreference="Stop"
-
 # use $message for input if supplied
-if ($message) {
-  $input = $message
-}
+if ($message) { $input = $message }
 
 # See end of file for main entry point
 
 
 #------------------------------------------------------------------------------
-function create-session($coninfo) {
+# Create the session object, based on script params
+#
+function create-session($coninfo,$join,$sendto,$input) {
   # verify/default arguments
   $coninfo = $coninfo.Clone()
   if (! $coninfo.server) { throw "missing server from coninfo" }
@@ -60,58 +59,62 @@ function create-session($coninfo) {
 
   $session = @{}
 
+  $session.coninfo = $coninfo
+
   $session.altnick=[int]1
   $session.realnick=$coninfo.nick
+
+  # check that we have a channel to send to
+  if ($sendto) {
+    if ($join -eq $sendto) { 
+      # weird syntax for contains, no inverse, so do nothing
+    }
+    else { $join += $sendto }
+  }
+
+  if ($join.length -eq 0) {
+    throw "you must supply channels to join (-join) or a channel to send to (-sendto)"
+  }
+  $session.join = $join
+  $session.sendto = $sendto
+  $session.input = $input
 
   return $session
 }
 
 
-# check that we have a channel to send to
-if ($sendto) {
-  if ($join -eq $sendto) { 
-    # weird syntax for contains, no inverse, so do nothing
-  }
-  else { $join += $sendto }
-}
-
-if ($join.length -eq 0) {
-  throw "you must supply channels to join (-join) or a channel to send to (-sendto)"
-}
 
 #------------------------------------------------------------------------------
 # send and flush a message, write it to debug too
-function _send([IO.StreamWriter]$sw,[string]$s) {
+function _send($session,[string]$s) {
+  [IO.StreamWriter]$sw=$session.writer
   $sw.WriteLine($s)
   write-verbose ">> $s"
-  $writer.Flush()
+  $sw.Flush()
 }
 
 #------------------------------------------------------------------------------
-function _privmsg($who,$msg) {
-  _send $writer "PRIVMSG $who :$msg"
+function _privmsg($session,$to,$msg) {
+  _send $session "PRIVMSG $to :$msg"
 }
 
 #------------------------------------------------------------------------------
-function _notice($who,$msg) {
-  _send $writer "NOTICE $who :$msg"
+function _notice($session,$who,$msg) {
+  _send $session "NOTICE $to :$msg"
 }
 
 #------------------------------------------------------------------------------
-function _onprivmsg {
-  $to = $params[0]
-  $ok = $incother -or ($incprivate -and $to -eq $realnick) -or ($incchannel -and $joined.Contains($to)) 
+function _onprivmsg($session,$from,$to,$msg) {
+  $ok = $incother -or ($incprivate -and $to -eq $realnick) -or ($incchannel -and $session.joined.Contains($to)) 
   if ($ok) {
-    $from = "$pfxnick ! $pfxuser@$pfxhost"
-    $msg = $params[1]
-    "$from : $to : $msg"
+    "$from : $to : $msg" # TODO make this an object
   }
 }
 
 #------------------------------------------------------------------------------
 # parse a line from the server and returns the prefix nick,user,host,command
 # and param array.
-function parseline {
+function parse-line {
   # parse lines from server
   [string]$prefix = ""
   [string]$command = ""
@@ -158,110 +161,112 @@ function parseline {
 
 
 #------------------------------------------------------------------------------
-# Make connection and start processing events.
+# Make the connection, but do not send/process any information.
 #
 function connect-session($session) {
   $c = new-object Net.Sockets.TcpClient
-  $c.Connect($coninfo.server, $coninfo.port)
-  [Net.Sockets.NetworkStream]$ns = $client.GetStream()
+  $c.Connect($session.coninfo.server, $session.coninfo.port)
+  [Net.Sockets.NetworkStream]$ns = $c.GetStream()
   $ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
   [IO.StreamWriter]$w = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
   [IO.StreamReader]$r = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
   # bung them in the session
   $session.client = $c
   $session.netstream = $ns
-  $session.writer = $writer
-  $session.reader = $reader
+  $session.writer = $w
+  $session.reader = $r
 }
 
-if ($coninfo.pwd -ne "") { _send $writer "PASS $($coninfo.pwd)" }
-_send $writer "NICK $realnick" 
-_send $writer "USER $($coninfo.user) $($coninfo.hostname) $($coninfo.server) :$($coninfo.realname)" 
 
+#------------------------------------------------------------------------------
+# Run the session.
+# Do the authentication/identification bit, then join channels,
+# send messages, handle responses.
+# Quit condition depends on session type. Default is to write
+# messages, then quit when done.
+# TODO: flesh this out
+#
+function run-session($session) {
+  if ($session.coninfo.pwd -ne "") { _send $session "PASS $($session.coninfo.pwd)" }
+  _send $session "NICK $($session.realnick)" 
+  _send $session "USER $($session.coninfo.user) $($session.coninfo.hostname) $($session.coninfo.server) :$($session.coninfo.realname)" 
+  # here follows the main event loop.
+  $session.active = $true
+  $session.joined = @{} # channels that have been joined 
 
+  while ($session.active) {
+    [string]$line = $session.reader.ReadLine()
+    if (!$line) { break }
+    write-verbose "<< $line"
 
-# here follows the main event loop.
-$active = $true
-$joined = @{} # channels that have been joined 
+    $pfxnick,$pfxuser,$pfxhost,$command,$params = parse-line $line
 
-while ($active) {
-  [string]$line = $reader.ReadLine()
-  if (!$line) { break }
-  write-verbose "<< $line"
-
-  $pfxnick,$pfxuser,$pfxhost,$command,$params = parseline $line
-
-  # route messages accordingly
-  switch ($command) {
-    "PING" { 
-      _send $writer "PONG $($params[0])"
-      break
-    }
-    "372" { # MOTD text
-      if ($incmotd) {
-        $params[1]
+    # route messages accordingly
+    switch ($command) {
+      "PING" { 
+        _send $session "PONG $($params[0])"
+        $session.active  = $false # safetynet
+        break
       }
-      break
-    }
-    "376" { # end of motd message - connected and free to do stuff
-      $channels = [string]::join(",",$join)
-      _send $writer "JOIN $channels"
-      break
-    }
-    "JOIN" { # got a JOIN msg - it might have been me
-      if ($pfxnick -eq $realnick) {
-        $chan = $params[0]
-        write-debug "We may have joined channel $chan"
-        $joined[$chan] = $true
-        if ($chan -eq $sendto) {
-          # send the message TODO: fix this rubbish
-          _privmsg $chan $message
+      "372" { # MOTD text
+        if ($incmotd) {
+          $params[1]
+        }
+        break
+      }
+      "376" { # end of motd message - connected and free to do stuff
+        $channels = [string]::join(",",$session.join)
+        _send $session "JOIN $channels"
+        break
+      }
+      "JOIN" { # got a JOIN msg - it might have been me
+        if ($pfxnick -eq $session.realnick) {
+          $chan = $params[0]
+          write-debug "We may have joined channel $chan"
+          $session.joined[$chan] = $true
+          if ($chan -eq $session.sendto) {
+            # send the message TODO: fix this rubbish
+            _privmsg $session $chan "hello"
+          }
         }
       }
-    }
-    "332" { # RPL_TOPIC - we have joined a channel
-      if ($params[0] -eq $realnick) {
-        $chan = $params[1]
-        write-debug "We have joined channel $chan"
-        $joined[$chan] = $true
-        # TODO tie this up with JOIN above
+      "332" { # RPL_TOPIC - we have joined a channel
+        if ($params[0] -eq $session.realnick) {
+          $chan = $params[1]
+          write-debug "We have joined channel $chan"
+          $session.joined[$chan] = $true
+          # TODO tie this up with JOIN above
+        }
+        break
       }
-      break
-    }
-    "433" { # ERR_NICKNAMEINUSE try another
-      $t = $realnick
-      $altnick++
-      $realnick = "$($coninfo.nick)$altnick"
-      write-debug "NICK $t was in use, trying $realnick"
-      _send $writer "NICK $realnick"
-      break
-    }
-    "NOTICE" { # a notice that should not be replied to
-      if (! $incnotice ) { break }
-      # else treat as a privmsg
-      _onprivmsg $params
-    }
-    "PRIVMSG" { # a private message, either to channel or me
-      _onprivmsg $params
-      if ($params[1] -match "wibble") {
-        $active=$false # code word to quit
+      "433" { # ERR_NICKNAMEINUSE try another
+        $t = $session.realnick
+        $session.altnick = $session.altnick +1
+        $session.realnick = "$($session.coninfo.nick)$altnick"
+        write-debug "NICK $t was in use, trying $($session.realnick)"
+        _send $session "NICK $($session.realnick)"
+        break
       }
-      break
-    }
-    default {
-      write-debug "Ignoring: $command"
+      "NOTICE" { # a notice that should not be replied to
+        if (! $incnotice ) { break }
+        # else treat as a privmsg 
+        # TODO: fix the 'from' bit - should be more than just $pfxnick
+        _onprivmsg $session $pfxnick $params[0] $params[1]
+        break
+      }
+      "PRIVMSG" { # a private message, either to channel or me
+        _onprivmsg $session -from $pfxnick -to $params[0] -msg $params[1]
+        if ($params[1] -match "wibble") {
+          $session.active=$false # code word to quit TODO: fix this
+        }
+        break
+      }
+      default {
+        write-debug "Ignoring: $command"
+      }
     }
   }
 }
-
-# leave any joined channels
-$joined.GetEnumerator() | where {$_.value} | foreach {
-  _send $writer "PART $($_.name)"
-}
-# quit
-_send $writer "QUIT :bye bye"
-
-$client.Close();
 
 
 #------------------------------------------------------------------------------
@@ -279,8 +284,8 @@ function disconnect-session($session) {
 #------------------------------------------------------------------------------
 # program starts here
 #
-$sess = create-session $coninfo
-connect-session $sess
+$sess = create-session $coninfo $join $sendto $input
+connect-session $sess 
 run-session $sess
 disconnect-session $sess
 
