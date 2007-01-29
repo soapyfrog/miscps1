@@ -205,7 +205,6 @@ function run-session($session) {
     switch ($command) {
       "PING" { 
         _send $session "PONG $($params[0])"
-        $session.active  = $false # safetynet
         break
       }
       "372" { # MOTD text
@@ -242,7 +241,7 @@ function run-session($session) {
       "433" { # ERR_NICKNAMEINUSE try another
         $t = $session.realnick
         $session.altnick = $session.altnick +1
-        $session.realnick = "$($session.coninfo.nick)$altnick"
+        $session.realnick = "$($session.coninfo.nick)$($session.altnick)"
         write-debug "NICK $t was in use, trying $($session.realnick)"
         _send $session "NICK $($session.realnick)"
         break
@@ -273,8 +272,9 @@ function run-session($session) {
 function disconnect-session($session) {
   # leave any joined channels
   $session.joined.GetEnumerator() | where {$_.value} | foreach {
-  _send $writer "PART $($_.name)"
+  _send $session "PART $($_.name)"
   }
+  _send $session "QUIT :bye bye"
   # close the client connection
   $session.client.Close()
   $session.client = $null
