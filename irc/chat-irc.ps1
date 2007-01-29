@@ -105,7 +105,7 @@ function _notice($session,$who,$msg) {
 
 #------------------------------------------------------------------------------
 function _onprivmsg($session,$from,$to,$msg) {
-  $ok = $incother -or ($incprivate -and $to -eq $realnick) -or ($incchannel -and $session.joined.Contains($to)) 
+  $ok = $incother -or ($incprivate -and $to -eq $session.realnick) -or ($incchannel -and $session.joined.Contains($to)) 
   if ($ok) {
     "$from : $to : $msg" # TODO make this an object
   }
@@ -167,7 +167,7 @@ function connect-session($session) {
   $c = new-object Net.Sockets.TcpClient
   $c.Connect($session.coninfo.server, $session.coninfo.port)
   [Net.Sockets.NetworkStream]$ns = $c.GetStream()
-  $ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
+  $ns.ReadTimeout = 1000*60*4 # debug - we want errors if we get nothing for 4 mins
   [IO.StreamWriter]$w = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
   [IO.StreamReader]$r = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
   # bung them in the session
@@ -187,6 +187,7 @@ function connect-session($session) {
 # TODO: flesh this out
 #
 function run-session($session) {
+
   if ($session.coninfo.pwd -ne "") { _send $session "PASS $($session.coninfo.pwd)" }
   _send $session "NICK $($session.realnick)" 
   _send $session "USER $($session.coninfo.user) $($session.coninfo.hostname) $($session.coninfo.server) :$($session.coninfo.realname)" 
@@ -196,9 +197,9 @@ function run-session($session) {
 
   while ($session.active) {
     [string]$line = $session.reader.ReadLine()
-    if (!$line) { break }
     write-verbose "<< $line"
 
+    if (!$line) { break }
     $pfxnick,$pfxuser,$pfxhost,$command,$params = parse-line $line
 
     # route messages accordingly
@@ -209,7 +210,7 @@ function run-session($session) {
       }
       "372" { # MOTD text
         if ($incmotd) {
-          $params[1]
+          $params[1] # need to param
         }
         break
       }
@@ -261,7 +262,8 @@ function run-session($session) {
         break
       }
       default {
-        write-debug "Ignoring: $command"
+        # not sure what to do here... 
+        # you can see what's going on if -verbose
       }
     }
   }
@@ -269,10 +271,12 @@ function run-session($session) {
 
 
 #------------------------------------------------------------------------------
+# leave any joined channels, then quit
+#
 function disconnect-session($session) {
   # leave any joined channels
   $session.joined.GetEnumerator() | where {$_.value} | foreach {
-  _send $session "PART $($_.name)"
+    _send $session "PART $($_.name)"
   }
   _send $session "QUIT :bye bye"
   # close the client connection
