@@ -44,7 +44,8 @@ if ($message) {
 # See end of file for main entry point
 
 
-function createSession($coninfo) {
+#------------------------------------------------------------------------------
+function create-session($coninfo) {
   # verify/default arguments
   $coninfo = $coninfo.Clone()
   if (! $coninfo.server) { throw "missing server from coninfo" }
@@ -78,6 +79,7 @@ if ($join.length -eq 0) {
   throw "you must supply channels to join (-join) or a channel to send to (-sendto)"
 }
 
+#------------------------------------------------------------------------------
 # send and flush a message, write it to debug too
 function _send([IO.StreamWriter]$sw,[string]$s) {
   $sw.WriteLine($s)
@@ -85,14 +87,17 @@ function _send([IO.StreamWriter]$sw,[string]$s) {
   $writer.Flush()
 }
 
+#------------------------------------------------------------------------------
 function _privmsg($who,$msg) {
   _send $writer "PRIVMSG $who :$msg"
 }
 
+#------------------------------------------------------------------------------
 function _notice($who,$msg) {
   _send $writer "NOTICE $who :$msg"
 }
 
+#------------------------------------------------------------------------------
 function _onprivmsg {
   $to = $params[0]
   $ok = $incother -or ($incprivate -and $to -eq $realnick) -or ($incchannel -and $joined.Contains($to)) 
@@ -152,12 +157,23 @@ function parseline {
 }
 
 
-$script:client = new-object Net.Sockets.TcpClient
-$client.Connect($coninfo.server, $coninfo.port)
-[Net.Sockets.NetworkStream]$script:ns = $client.GetStream()
-$ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
-[IO.StreamWriter]$script:writer = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
-[IO.StreamReader]$script:reader = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
+#------------------------------------------------------------------------------
+# Make connection and start processing events.
+#
+function connect-session($session) {
+  $c = new-object Net.Sockets.TcpClient
+  $c.Connect($coninfo.server, $coninfo.port)
+  [Net.Sockets.NetworkStream]$ns = $client.GetStream()
+  $ns.ReadTimeout = 240000 # debug - we want errors if we get nothing for 4 mins
+  [IO.StreamWriter]$w = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
+  [IO.StreamReader]$r = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
+  # bung them in the session
+  $session.client = $c
+  $session.netstream = $ns
+  $session.writer = $writer
+  $session.reader = $reader
+}
+
 if ($coninfo.pwd -ne "") { _send $writer "PASS $($coninfo.pwd)" }
 _send $writer "NICK $realnick" 
 _send $writer "USER $($coninfo.user) $($coninfo.hostname) $($coninfo.server) :$($coninfo.realname)" 
@@ -248,10 +264,25 @@ _send $writer "QUIT :bye bye"
 $client.Close();
 
 
+#------------------------------------------------------------------------------
+function disconnect-session($session) {
+  # leave any joined channels
+  $session.joined.GetEnumerator() | where {$_.value} | foreach {
+  _send $writer "PART $($_.name)"
+  }
+  # close the client connection
+  $session.client.Close()
+  $session.client = $null
+}
 
 
-#--
+#------------------------------------------------------------------------------
 # program starts here
 #
-$session = createSession($coninfo)
+$sess = create-session $coninfo
+connect-session $sess
+run-session $sess
+disconnect-session $sess
+
+
 
