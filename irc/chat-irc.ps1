@@ -16,7 +16,7 @@
 # This script handles chatting and listing to IRC servers.
 
 param(
-[string[]]$join=@(),                      # channel(s) to join
+[string[]]$monitor=@(),                      # channel(s) to join and monitor
 [string]$sendto=$null,                    # channel to send message to
 [string[]]$message=$null,                 # default is input pipeline
 [Collections.IEnumerable]$coninfo=$(throw "missing coninfo"),
@@ -49,7 +49,7 @@ else {
 #------------------------------------------------------------------------------
 # Create the session object, based on script params
 #
-function create-session($coninfo,$join,$sendto,$messages) {
+function create-session($coninfo,$monitor,$sendto,$messages) {
   # verify/default arguments
   $coninfo = $coninfo.Clone()
   if (! $coninfo.server) { throw "missing server from coninfo" }
@@ -69,18 +69,22 @@ function create-session($coninfo,$join,$sendto,$messages) {
   $session.altnick=[int]1
   $session.realnick=$coninfo.nick
 
-  # check that we have a channel to send to
+  # determine default quit mode. if we've got something for sendto but not monitor
+  # we quit after all messages are sent.
+  $session.quitonsend = $( if ($sendto -and -not $monitor) { $true } else { $false } )
+
+  # check that we have a channel to send to, and or channels to monitor
   if ($sendto) {
-    if ($join -eq $sendto) { 
+    if ($monitor -eq $sendto) { 
       # weird syntax for contains, no inverse, so do nothing
     }
-    else { $join += $sendto }
+    else { $monitor += $sendto }
   }
 
-  if ($join.length -eq 0) {
-    throw "you must supply channels to join (-join) or a channel to send to (-sendto)"
+  if ($monitor.length -eq 0) {
+    throw "you must supply channels to join (-monitor) or a channel to send to (-sendto)"
   }
-  $session.join = $join
+  $session.monitor = $monitor
   $session.sendto = $sendto
   $session.messages = $messages
 
@@ -99,19 +103,22 @@ function _send($session,[string]$s) {
 }
 
 #------------------------------------------------------------------------------
+# send a private message
 function _privmsg($session,$to,$msg) {
   _send $session "PRIVMSG $to :$msg"
 }
 
 #------------------------------------------------------------------------------
+# send a notice
 function _notice($session,$who,$msg) {
   _send $session "NOTICE $to :$msg"
 }
 
 #------------------------------------------------------------------------------
+# handle a received message
 function _onprivmsg($session,$from,$to,$msg) {
-  $ok = $incother -or ($incprivate -and $to -eq $session.realnick) -or ($incchannel -and $session.joined.Contains($to)) 
-  if ($ok) {
+  $interesting = $incother -or ($incprivate -and $to -eq $session.realnick) -or ($incchannel -and $session.joined.Contains($to)) 
+  if ($interesting) {
     "$from : $to : $msg" # TODO make this an object
   }
 }
@@ -200,7 +207,7 @@ function process-line($session,$line) {
         break
       }
       "376" { # end of motd message - connected and free to do stuff
-        $channels = [string]::join(",",$session.join)
+        $channels = [string]::join(",",$session.monitor)
         _send $session "JOIN $channels"
         break
       }
@@ -253,27 +260,26 @@ function process-line($session,$line) {
 #
 function process-idle($session) {
   # write pending input messages or just hang about
-  $throttle = 1000
-  $joined = $session.joined[$session.sendto]
-  if ($joined) {
-    $gotinput = $session.messages.MoveNext()
-    if ($gotinput) {
+  $throttle = 1000 # idle time of 1 sec
+  if ($session.joined[$session.sendto]) {
+    if ($session.messages.MoveNext()) {
       _privmsg $session $session.sendto $session.messages.Current
-      $throttle = 200
+      $throttle = 200 # max 5/sec TODO: param this
+    }
+    else {
+      if ($session.quitonsend) {
+        $session.active = $false
+      }
     }
   }
-  else {
-    start-sleep -millis $throttle
-  }
+  start-sleep -millis $throttle
 }
 
 #------------------------------------------------------------------------------
 # Run the session.
 # Do the authentication/identification bit, then join channels,
 # send messages, handle responses.
-# Quit condition depends on session type. Default is to write
-# messages, then quit when done.
-# TODO: flesh this out
+# Will continue until the active flag in the session is set to false.
 #
 function run-session($session) {
   if ($session.coninfo.pwd -ne "") { _send $session "PASS $($session.coninfo.pwd)" }
@@ -290,6 +296,10 @@ function run-session($session) {
   while (($session.active) -and ($session.client.Connected) ) {
     # read data if available, else do idle stuff
     if ($session.netstream.DataAvailable) {
+      # byte at a time might seem inefficient, but code is simpler and
+      # it's only as fast as the network+server anyway
+      # note cast from byte to char is more or less ok as irc
+      # is a dumb 8-bit character stream anyway
       [char]$ch = $session.netstream.ReadByte()
       if ($ch -eq 13) {
         process-line $session $line
@@ -322,10 +332,7 @@ function disconnect-session($session) {
 #------------------------------------------------------------------------------
 # program starts here
 #
-$sess = create-session $coninfo $join $sendto $messages
+$sess = create-session $coninfo $monitor $sendto $messages
 connect-session $sess 
 run-session $sess
 disconnect-session $sess
-
-
-
