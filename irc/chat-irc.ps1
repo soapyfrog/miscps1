@@ -36,7 +36,12 @@ if ($debug) { $DebugPreference="Continue" }
 if ($verbose) { $VerbosePreference="Continue" }
 $ErrorActionPreference="Stop"
 # use $message for input if supplied
-if ($message) { $input = $message }
+if ($message) {
+  $messages = $message
+}
+else {
+  $messages = $input
+}
 
 # See end of file for main entry point
 
@@ -44,7 +49,7 @@ if ($message) { $input = $message }
 #------------------------------------------------------------------------------
 # Create the session object, based on script params
 #
-function create-session($coninfo,$join,$sendto,$input) {
+function create-session($coninfo,$join,$sendto,$messages) {
   # verify/default arguments
   $coninfo = $coninfo.Clone()
   if (! $coninfo.server) { throw "missing server from coninfo" }
@@ -77,7 +82,7 @@ function create-session($coninfo,$join,$sendto,$input) {
   }
   $session.join = $join
   $session.sendto = $sendto
-  $session.input = $input
+  $session.messages = $messages
 
   return $session
 }
@@ -167,39 +172,19 @@ function connect-session($session) {
   $c = new-object Net.Sockets.TcpClient
   $c.Connect($session.coninfo.server, $session.coninfo.port)
   [Net.Sockets.NetworkStream]$ns = $c.GetStream()
-  $ns.ReadTimeout = 1000*60*4 # debug - we want errors if we get nothing for 4 mins
   [IO.StreamWriter]$w = new-object IO.StreamWriter($ns,[Text.Encoding]::ASCII)
-  [IO.StreamReader]$r = new-object IO.StreamReader($ns,[Text.Encoding]::ASCII)
   # bung them in the session
   $session.client = $c
   $session.netstream = $ns
   $session.writer = $w
-  $session.reader = $r
 }
 
-
 #------------------------------------------------------------------------------
-# Run the session.
-# Do the authentication/identification bit, then join channels,
-# send messages, handle responses.
-# Quit condition depends on session type. Default is to write
-# messages, then quit when done.
-# TODO: flesh this out
+# Process one line from the server.
 #
-function run-session($session) {
-
-  if ($session.coninfo.pwd -ne "") { _send $session "PASS $($session.coninfo.pwd)" }
-  _send $session "NICK $($session.realnick)" 
-  _send $session "USER $($session.coninfo.user) $($session.coninfo.hostname) $($session.coninfo.server) :$($session.coninfo.realname)" 
-  # here follows the main event loop.
-  $session.active = $true
-  $session.joined = @{} # channels that have been joined 
-
-  while ($session.active) {
-    [string]$line = $session.reader.ReadLine()
+function process-line($session,$line) {
     write-verbose "<< $line"
 
-    if (!$line) { break }
     $pfxnick,$pfxuser,$pfxhost,$command,$params = parse-line $line
 
     # route messages accordingly
@@ -224,10 +209,6 @@ function run-session($session) {
           $chan = $params[0]
           write-debug "We may have joined channel $chan"
           $session.joined[$chan] = $true
-          if ($chan -eq $session.sendto) {
-            # send the message TODO: fix this rubbish
-            _privmsg $session $chan "hello"
-          }
         }
       }
       "332" { # RPL_TOPIC - we have joined a channel
@@ -235,7 +216,6 @@ function run-session($session) {
           $chan = $params[1]
           write-debug "We have joined channel $chan"
           $session.joined[$chan] = $true
-          # TODO tie this up with JOIN above
         }
         break
       }
@@ -266,6 +246,60 @@ function run-session($session) {
         # you can see what's going on if -verbose
       }
     }
+}
+
+#------------------------------------------------------------------------------
+# Do things during idle time (when nothing received from server)
+#
+function process-idle($session) {
+  # write pending input messages or just hang about
+  $throttle = 1000
+  $joined = $session.joined[$session.sendto]
+  if ($joined) {
+    $gotinput = $session.messages.MoveNext()
+    if ($gotinput) {
+      _privmsg $session $session.sendto $session.messages.Current
+      $throttle = 200
+    }
+  }
+  else {
+    start-sleep -millis $throttle
+  }
+}
+
+#------------------------------------------------------------------------------
+# Run the session.
+# Do the authentication/identification bit, then join channels,
+# send messages, handle responses.
+# Quit condition depends on session type. Default is to write
+# messages, then quit when done.
+# TODO: flesh this out
+#
+function run-session($session) {
+  if ($session.coninfo.pwd -ne "") { _send $session "PASS $($session.coninfo.pwd)" }
+  _send $session "NICK $($session.realnick)" 
+  _send $session "USER $($session.coninfo.user) $($session.coninfo.hostname) $($session.coninfo.server) :$($session.coninfo.realname)" 
+  # here follows the main event loop.
+  $session.active = $true
+  $session.joined = @{} # channels that have been joined 
+
+  # building up a line of text from the server
+  $line = [string]""
+
+  # while we're active and the client is connected
+  while (($session.active) -and ($session.client.Connected) ) {
+    # read data if available, else do idle stuff
+    if ($session.netstream.DataAvailable) {
+      [char]$ch = $session.netstream.ReadByte()
+      if ($ch -eq 13) {
+        process-line $session $line
+        $line = ""
+      }
+      elseif ($ch -ne 10) { $line += $ch }
+    }
+    else {
+      process-idle $session
+    }
   }
 }
 
@@ -288,7 +322,7 @@ function disconnect-session($session) {
 #------------------------------------------------------------------------------
 # program starts here
 #
-$sess = create-session $coninfo $join $sendto $input
+$sess = create-session $coninfo $join $sendto $messages
 connect-session $sess 
 run-session $sess
 disconnect-session $sess
