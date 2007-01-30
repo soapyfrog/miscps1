@@ -13,7 +13,7 @@
 # $Id$
 
 #------------------------------------------------------------------------------
-# This script handles chatting and listing to IRC servers.
+# This script handles chatting to and monitoring IRC servers.
 
 param(
 [string[]]$monitor=@(),                   # channel(s) to join and monitor
@@ -118,7 +118,7 @@ function make-outobj($from,$to,$msg) {
 
 
 #------------------------------------------------------------------------------
-# send and flush a message, write it to debug too
+# send and flush a message, write it to verbose channel too
 function _send($session,[string]$s) {
   [IO.StreamWriter]$sw=$session.writer
   $sw.WriteLine($s)
@@ -134,12 +134,14 @@ function _privmsg($session,$to,$msg) {
 
 #------------------------------------------------------------------------------
 # send a notice
-function _notice($session,$who,$msg) {
+function _notice($session,$to,$msg) {
   _send $session "NOTICE $to :$msg"
 }
 
 #------------------------------------------------------------------------------
 # handle a received message
+# if it is deemed interesting (based on switches) make an object out of the
+# properties and place it in the output pipeline
 function _onprivmsg($session,$from,$to,$msg) {
   $interesting = $incother -or ($incprivate -and $to -eq $session.realnick) -or ($incchannel -and $session.joined.Contains($to)) 
   if ($interesting) {
@@ -242,6 +244,7 @@ function process-line($session,$line) {
           write-debug "We may have joined channel $chan"
           $session.joined[$chan] = $true
         }
+        # TODO: support PART,KICK,BAN and so on.
       }
       "332" { # RPL_TOPIC - we have joined a channel
         if ($params[0] -eq $session.realnick) {
@@ -277,7 +280,10 @@ function process-line($session,$line) {
 }
 
 #------------------------------------------------------------------------------
-# Do things during idle time (when nothing received from server)
+# Do things during idle time (when nothing received from server).
+# This is where the input messages are written.
+# If we are not configured to monitor channels, we set session
+# to inactive if there is no more input.
 #
 function process-idle($session) {
   # write pending input messages or just hang about
@@ -326,7 +332,10 @@ function run-session($session) {
         process-line $session $line
         $line = ""
       }
-      elseif ($ch -ne 10) { $line += $ch }
+      elseif ($ch -ne 10) {
+        # unless a newline, accumulate in the string
+        $line += $ch 
+      }
     }
     else {
       process-idle $session
