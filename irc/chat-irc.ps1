@@ -16,17 +16,23 @@
 # This script handles chatting and listing to IRC servers.
 
 param(
-[string[]]$monitor=@(),                      # channel(s) to join and monitor
+[string[]]$monitor=@(),                   # channel(s) to join and monitor
 [string]$sendto=$null,                    # channel to send message to
 [string[]]$message=$null,                 # default is input pipeline
 [Collections.IEnumerable]$coninfo=$(throw "missing coninfo"),
-                                        # include in the output:
+
+# include in the output:
 [switch]$incprivate = $false,             # msgs to me
 [switch]$incchannel = $true,              # msgs to my channel(s)
 [switch]$incnotice = $false,              # notices as well as privmsgs
 [switch]$incother = $false,               # msgs to other (eg auth msgs)
 [switch]$incmotd = $false,                # motd
 
+# shouldn't need to set the following
+[int]$throttledelay = 200,                # time in ms between sends
+[int]$idledelay = 1000,                   # time in ms to sleep when idle
+
+# handy overrides for verbose and debug variables
 [switch]$debug,                           # output debug info
 [switch]$verbose                          # output all client/server messages
 )
@@ -92,6 +98,24 @@ function create-session($coninfo,$monitor,$sendto,$messages) {
 }
 
 
+#------------------------------------------------------------------------------
+# make an object out of from,to,msg
+# to and msg are strings, from is a hash of prefix,nick,user,host
+#
+function make-outobj($from,$to,$msg) {
+  # start out as a formatted string
+  $o = "$($from.nick) : $to : $msg"
+  # now add note properties so we can do something else with it.
+  $o = add-member -i $o -type "noteproperty" -name "date" -force -passthru (get-date)
+  foreach ($k in $from.keys) {
+    $o = add-member -i $o -type "noteproperty" -name "$k" -force -passthru $from[$k]
+  }
+  $o = add-member -i $o -type "noteproperty" -name "to" -force -passthru $to
+  $o = add-member -i $o -type "noteproperty" -name "message" -force -passthru $msg
+  
+  $o
+}
+
 
 #------------------------------------------------------------------------------
 # send and flush a message, write it to debug too
@@ -119,7 +143,7 @@ function _notice($session,$who,$msg) {
 function _onprivmsg($session,$from,$to,$msg) {
   $interesting = $incother -or ($incprivate -and $to -eq $session.realnick) -or ($incchannel -and $session.joined.Contains($to)) 
   if ($interesting) {
-    "$from : $to : $msg" # TODO make this an object
+    make-outobj $from $to $msg
   }
 }
 
@@ -168,7 +192,7 @@ function parse-line {
     $pfxhost = $matches[5]
   }
 
-  return $pfxnick,$pfxuser,$pfxhost,$command,$params
+  return @{full=$prefix;nick=$pfxnick;user=$pfxuser;host=$pfxhost},$command,$params
 }
 
 
@@ -192,7 +216,8 @@ function connect-session($session) {
 function process-line($session,$line) {
     write-verbose "<< $line"
 
-    $pfxnick,$pfxuser,$pfxhost,$command,$params = parse-line $line
+    #$pfxnick,$pfxuser,$pfxhost,$command,$params = parse-line $line
+    $prefix,$command,$params = parse-line $line
 
     # route messages accordingly
     switch ($command) {
@@ -212,7 +237,7 @@ function process-line($session,$line) {
         break
       }
       "JOIN" { # got a JOIN msg - it might have been me
-        if ($pfxnick -eq $session.realnick) {
+        if ($prefix.nick -eq $session.realnick) {
           $chan = $params[0]
           write-debug "We may have joined channel $chan"
           $session.joined[$chan] = $true
@@ -237,17 +262,13 @@ function process-line($session,$line) {
       "NOTICE" { # a notice that should not be replied to
         if (! $incnotice ) { break }
         # else treat as a privmsg 
-        # TODO: fix the 'from' bit - should be more than just $pfxnick
-        _onprivmsg $session $pfxnick $params[0] $params[1]
+        _onprivmsg $session -from $prefix -to $params[0] -msg $params[1]
         break
       }
       "PRIVMSG" { # a private message, either to channel or me
-        _onprivmsg $session -from $pfxnick -to $params[0] -msg $params[1]
-        if ($params[1] -match "wibble") {
-          $session.active=$false # code word to quit TODO: fix this
-        }
-        break
-      }
+        _onprivmsg $session -from $prefix -to $params[0] -msg $params[1]
+        if ($params[1] -match "stopstopstop" ) {
+          $session.active=$false 
       default {
         # not sure what to do here... 
         # you can see what's going on if -verbose
@@ -260,11 +281,11 @@ function process-line($session,$line) {
 #
 function process-idle($session) {
   # write pending input messages or just hang about
-  $throttle = 1000 # idle time of 1 sec
+  $delay = $idledelay
   if ($session.joined[$session.sendto]) {
     if ($session.messages.MoveNext()) {
       _privmsg $session $session.sendto $session.messages.Current
-      $throttle = 200 # max 5/sec TODO: param this
+      $throttle = $throttledelay
     }
     else {
       if ($session.quitonsend) {
@@ -272,7 +293,7 @@ function process-idle($session) {
       }
     }
   }
-  start-sleep -millis $throttle
+  start-sleep -millis $delay
 }
 
 #------------------------------------------------------------------------------
