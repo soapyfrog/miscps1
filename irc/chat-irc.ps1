@@ -29,8 +29,8 @@ param(
 [switch]$incmotd = $false,                # motd
 
 # shouldn't need to set the following
-[int]$throttledelay = 200,                # time in ms between sends
-[int]$idledelay = 1000,                   # time in ms to sleep when idle
+[int]$throttledelay = 1000,               # time in ms between sends
+[int]$idledelay = 2000,                   # time in ms to sleep when idle
 
 # handy overrides for verbose and debug variables
 [switch]$debug,                           # output debug info
@@ -90,7 +90,18 @@ function create-session($coninfo,$monitor,$sendto,$messages) {
   if ($monitor.length -eq 0) {
     throw "you must supply channels to join (-monitor) or a channel to send to (-sendto)"
   }
-  $session.monitor = $monitor
+
+  $session.active = $false
+
+  # channels that have been joined - this will grow as channels are joined
+  # either from being in th monitor list or because of invites
+  $session.joined = @{} 
+
+  # monitor is an array of channels, but we convert to a hash
+  # for ease of use
+  $session.monitor = @{} 
+  foreach ($m in $monitor) { $session.monitor[$m] = $true }
+
   $session.sendto = $sendto
   $session.messages = $messages
 
@@ -129,13 +140,17 @@ function _send($session,[string]$s) {
 #------------------------------------------------------------------------------
 # send a private message
 function _privmsg($session,$to,$msg) {
-  _send $session "PRIVMSG $to :$msg"
+  $o = $msg.trimend() # lose eol, if any
+  if ($o -eq "") { $o = "-" } # can't send blank line
+  _send $session "PRIVMSG $to :$o"
 }
 
 #------------------------------------------------------------------------------
 # send a notice
 function _notice($session,$to,$msg) {
-  _send $session "NOTICE $to :$msg"
+  $o = $msg.trimend() # lose eol, if any
+  if ($o -eq "") { $o = "-" } # can't send blank line
+  _send $session "NOTICE $to :$o"
 }
 
 #------------------------------------------------------------------------------
@@ -210,6 +225,7 @@ function connect-session($session) {
   $session.client = $c
   $session.netstream = $ns
   $session.writer = $w
+  $session.active = $true
 }
 
 #------------------------------------------------------------------------------
@@ -222,34 +238,74 @@ function process-line($session,$line) {
     $prefix,$command,$params = parse-line $line
 
     # route messages accordingly
-    switch ($command) {
+    switch -regex ($command) {
       "PING" { 
-        _send $session "PONG $($params[0])"
+        # send a PONG
+        _send $session "PONG :$($params[0])"
         break
       }
-      "372" { # MOTD text
+      "372" { 
+        # MOTD text
         if ($incmotd) {
           $params[1] # need to param
         }
         break
       }
-      "376" { # end of motd message - connected and free to do stuff
-        $channels = [string]::join(",",$session.monitor)
-        _send $session "JOIN $channels"
+      "376" { 
+        # end of motd message 
+        # this indicates it's ok to start doing other things
+        foreach ($c in $session.monitor.keys) {
+          _send $session "JOIN $c"
+        }
         break
       }
-      "JOIN" { # got a JOIN msg - it might have been me
+      "47[1-9]" { 
+        # assorted "you cannot join this channel" codes
+        if ($params[0] -eq $session.realnick) {
+          $chan = $params[1]
+          $reason = $params[2]
+          write-warning "Unable to join $chan because: $reason"
+          $session.monitor.Remove($chan)
+          if ($session.monitor.count -eq 0) {
+            $session.active = $false
+            write-debug "Unable to join any channels, quitting"
+          }
+        }
+        break
+      }
+      "JOIN" { 
+        # got a JOIN msg - it might have been me
+        # this is not certain, but useful as a joined channel
+        # without a topic will not send a RPL_TOPIC(332)
         if ($prefix.nick -eq $session.realnick) {
           $chan = $params[0]
-          write-debug "We may have joined channel $chan"
+          write-debug "I *may* have joined channel $chan"
           $session.joined[$chan] = $true
         }
         # TODO: support PART,KICK,BAN and so on.
       }
-      "332" { # RPL_TOPIC - we have joined a channel
+      "KICK" { 
+        # have I been kicked?
+        if ($params[1] -eq $session.realnick) {
+          $chan = $params[0]
+          $reason = $params[2]
+          write-warning "I have been kicked from channel $chan because $reason"
+          $session.joined.Remove($chan)
+          $numjoined = ($session.joined.count)
+          write-debug "num joined = $numjoined"
+          if ($numjoined -eq 0) {
+            $session.active = $false
+            write-debug "Not monitoring any channels, quitting."
+          }
+        }
+        # VERBOSE: << :millinad!~millinad@192.168.0.8 KICK #test soapybot :soapybot      
+      }
+      "332" { 
+        # RPL_TOPIC - we have joined a channel
+        # see also JOIN above
         if ($params[0] -eq $session.realnick) {
           $chan = $params[1]
-          write-debug "We have joined channel $chan"
+          write-debug "I have joined channel $chan"
           $session.joined[$chan] = $true
         }
         break
@@ -272,6 +328,14 @@ function process-line($session,$line) {
         _onprivmsg $session -from $prefix -to $params[0] -msg $params[1]
         if ($params[1] -match "stopstopstop" ) {
           $session.active=$false 
+        }
+        break
+      }
+      "4[0-9][0-9]" {
+        # all these are error numbers, just write them out as warnings
+        write-warning "Not handling error: $command $params"
+        break
+      }
       default {
         # not sure what to do here... 
         # you can see what's going on if -verbose
@@ -291,7 +355,7 @@ function process-idle($session) {
   if ($session.joined[$session.sendto]) {
     if ($session.messages.MoveNext()) {
       _privmsg $session $session.sendto $session.messages.Current
-      $throttle = $throttledelay
+      $delay = $throttledelay
     }
     else {
       if ($session.quitonsend) {
@@ -313,8 +377,6 @@ function run-session($session) {
   _send $session "NICK $($session.realnick)" 
   _send $session "USER $($session.coninfo.user) $($session.coninfo.hostname) $($session.coninfo.server) :$($session.coninfo.realname)" 
   # here follows the main event loop.
-  $session.active = $true
-  $session.joined = @{} # channels that have been joined 
 
   # building up a line of text from the server
   $line = [string]""
