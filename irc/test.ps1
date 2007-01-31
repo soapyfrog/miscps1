@@ -1,7 +1,7 @@
 $coninfo = @{
-  xxserver="chat.freenode.net"
-  server="192.168.0.8"
-  xxpwd="lampard8"
+  server="chat.freenode.net"
+  xxserver="192.168.0.8"
+  pwd="lampard8"
   user="soapybot"
   }
 
@@ -11,7 +11,7 @@ $coninfo = @{
 
 #"testing","one","two","three" | chat-irc -sendto "#test" -coninfo $coninfo -incprivate -incchannel -verbose -debug
 
-ps | out-string -stream | chat-irc  -monitor "#test","#test2" -sendto "#test" -coninfo $coninfo -incprivate -incchannel -verbose -debug
+ps | out-string -stream | chat-irc  -monitor "#test","#test2" -sendto "#test2" -coninfo $coninfo -incprivate -incchannel -verbose -debug
 
 # simple string output
 # test

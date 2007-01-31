@@ -14,6 +14,55 @@
 
 #------------------------------------------------------------------------------
 # This script handles chatting to and monitoring IRC servers.
+#
+# It operates in two modes, sender, or monitor (or both).
+#
+# Regardless, set up connection info in a hash, eg:
+# $coninfo = @{
+#   server="chat.freenode.net"
+#   port=6667
+#   nick="mynick"
+#   user="myuser"
+#   pwd="my password if required"
+#   realname="This is my real name"
+#   hostname"This is my host name, but is generally ignored"
+# }
+#
+# To send a message to the #test channel and quit:
+#
+# chat-irc -coninfo $coninfo -sendto "#test" -message "Hello, world"
+#
+# To send output from the pipeline:
+#
+# gc file.txt | chat-irc -coninfo $coninfo
+#
+# To monitor a channel for messages:
+#
+# chat-irc -coninfo $coninfo -monitor "#test"
+#
+# This will stay connected until you ctrl+C, are killed by the server, or
+# if chatirc is sent the message "stopstopstop"
+#
+# The output is annotated strings, so you can do:
+#
+# chat-irc -coninfo $coninfo -monitor "#test" select *
+#
+# The properties include sender info (user,host,nick,full), date, to and message
+#
+# These two modes can be used together, and the monitor parameter can take
+# more than one channel, so for example:
+#
+# chat-irc -coninfo $coninfo -monitor "#foo","#bar" -sendto "#test" -message "hello"
+#
+# will send "hello" to #test then monitor #foo,#bar and #test for messages.
+#
+# By default, only messages sent to the channel are output, but you can
+# include private messages with -incprivate, motd with -incmotd, notices
+# with -incnotice and other with -incother.
+#
+# You can see debug info with -debug and verbose output (all messages)
+# with -verbose
+#------------------------------------------------------------------------------
 
 param(
 [string[]]$monitor=@(),                   # channel(s) to join and monitor
@@ -43,7 +92,7 @@ if ($verbose) { $VerbosePreference="Continue" }
 $ErrorActionPreference="Stop"
 # use $message for input if supplied
 if ($message) {
-  $messages = $message
+  $messages = $message.GetEnumerator() # so can call MoveNext on it.
 }
 else {
   $messages = $input
@@ -62,11 +111,14 @@ function create-session($coninfo,$monitor,$sendto,$messages) {
   if (! $coninfo.port) { $coninfo.port = 6667 }
   if (! $coninfo.user) { throw "missing user from coninfo" }
   if (! $coninfo.nick) { $coninfo.nick = $coninfo.user}
-  if (! $coninfo.realname) { $coninfo.realname = "inout-irc as $($coninfo.nick)" }
+  if (! $coninfo.realname) { $coninfo.realname = "powershell bot using soapyfrog inout-irc.ps1" }
   if (! $coninfo.hostname) { $coninfo.hostname = "localhost" }
 
   write-debug "Using connection info:" # compact format
-  $coninfo.GetEnumerator() | foreach { write-debug "$($_.name): $($_.value)" }
+  foreach ($k in "server","port","user","nick","pwd","realname","hostname") {
+    if ($k -eq "pwd") { $v = "************" } else {$v=$coninfo[$k]}
+    write-debug "${k}: $v" 
+  }
 
   $session = @{}
 
@@ -133,7 +185,8 @@ function make-outobj($from,$to,$msg) {
 function _send($session,[string]$s) {
   [IO.StreamWriter]$sw=$session.writer
   $sw.WriteLine($s)
-  write-verbose ">> $s"
+  if ($s -match "^PASS") { write-verbose ">> PASS ************" }
+  else { write-verbose ">> $s" }
   $sw.Flush()
 }
 
@@ -247,7 +300,7 @@ function process-line($session,$line) {
       "372" { 
         # MOTD text
         if ($incmotd) {
-          $params[1] # need to param
+          make-outobj $prefix "MOTD" $params[1]
         }
         break
       }
@@ -282,7 +335,6 @@ function process-line($session,$line) {
           write-debug "I *may* have joined channel $chan"
           $session.joined[$chan] = $true
         }
-        # TODO: support PART,KICK,BAN and so on.
       }
       "KICK" { 
         # have I been kicked?
@@ -354,7 +406,8 @@ function process-idle($session) {
   $delay = $idledelay
   if ($session.joined[$session.sendto]) {
     if ($session.messages.MoveNext()) {
-      _privmsg $session $session.sendto $session.messages.Current
+      [string]$msg = $session.messages.Current
+      _privmsg $session $session.sendto $msg
       $delay = $throttledelay
     }
     else {
@@ -373,7 +426,7 @@ function process-idle($session) {
 # Will continue until the active flag in the session is set to false.
 #
 function run-session($session) {
-  if ($session.coninfo.pwd -ne "") { _send $session "PASS $($session.coninfo.pwd)" }
+  if ($session.coninfo.pwd) { _send $session "PASS $($session.coninfo.pwd)" }
   _send $session "NICK $($session.realnick)" 
   _send $session "USER $($session.coninfo.user) $($session.coninfo.hostname) $($session.coninfo.server) :$($session.coninfo.realname)" 
   # here follows the main event loop.
