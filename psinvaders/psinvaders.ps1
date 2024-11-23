@@ -215,7 +215,7 @@ function wipe-game-screen {
   for ($row=0; $row -lt $globs.screenheight; $row++) {
     [Console]::SetCursorPosition(0,$row)
     [Console]::Write($wipe)
-    sleep -m $delay
+    start-sleep -m $delay
   }
 }
 
@@ -541,7 +541,7 @@ for($basecount=0; $basecount -lt $bases.length; $basecount++){
                 $ferocity = 20
                 foreach ($deathframe in $horrificdeathsequence) {
 		 	            move-sprite $deathframe $deathx $basey
-                  sleep -m $ferocity
+                  start-sleep -m $ferocity
                   $ferocity = $ferocity*1.5
                 }
               }
@@ -549,10 +549,10 @@ for($basecount=0; $basecount -lt $bases.length; $basecount++){
                 for($flash=0;$flash -lt 10; $flash++){
 		              $base.state = 'dying'
                               draw-sprite $base
-		              sleep -m 20
+		              start-sleep -m 20
 		              $base.state = 'alive'
 		              draw-sprite $base
-		              sleep -m 20
+		              start-sleep -m 20
 		            }
               }
 	            if($lives -gt 0){
@@ -579,7 +579,7 @@ for($basecount=0; $basecount -lt $bases.length; $basecount++){
 	}
 
     
-        sleep -m 10
+        start-sleep -m 10
       } 
       # end of main game loop (invader drawing block)
       # everything below is done once per movement wave
@@ -687,7 +687,7 @@ function play-intro {
       draw-centre-string 23 $icblank
     }
 
-    sleep -m 20 # 50 times a second loop
+    start-sleep -m 20 # 50 times a second loop
     $framecount++
   }
 
@@ -705,7 +705,7 @@ function play-outro {
   $cabinet.hiscores += $cabinet.scores[0]
   [array]::Sort( $cabinet.hiscores )
   $cabinet.hiscores = $cabinet.hiscores[1..($cabinet.hiscores.Count-1)]  
-  sleep 2
+  start-sleep 2
 }
 
 # program kicks off here
