@@ -427,6 +427,7 @@ for([int]$temp = 10; $temp -lt 50; $temp += 10){
       # scan keyboard
       # left/right arrow down set basedx to -1/+1 and these are
       # reset on key up
+	  # also reset if you press up array (useful on linux)
       # a fire event is just set when space key down is registered.
       [int]$dofire = 0;
       while ($rawui.KeyAvailable ) {
@@ -434,10 +435,11 @@ for([int]$temp = 10; $temp -lt 50; $temp += 10){
         $k = $rk.VirtualKeyCode
         if ($rk.KeyDown) {
           switch ($k) {
-            37 { $basedx = -1; break }
-            39 { $basedx = 1; break }
-            32 { $dofire = 1; break }
-            27 { return 'quit' }
+            37 { $basedx = -1; break } # left
+            39 { $basedx = 1; break } # right
+            38 { $basedx = 0; break } # up
+            32 { $dofire = 1; break } # space
+            27 { return 'quit' } # esc
             ([int][char]'C') { 
               if (-not $dipswitches.infiniteLives) { 
                 $cabinet.credits++ 
